@@ -65,6 +65,15 @@ services:
       REDIS_URL: redis://redis:6379
     restart: unless-stopped
 
+  dashboard:
+    build: ./dashboard
+    container_name: pulse-dashboard
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   clickhouse_data:
   redis_data:
