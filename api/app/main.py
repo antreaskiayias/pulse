@@ -1,34 +1,27 @@
 import json
 import os
 from datetime import datetime, timezone
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.clickhouse_client import get_client
+from app.redis_client import get_redis
 
 app = FastAPI(title="PULSE API")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # tighten in production; fine for a local dashboard
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 VALID_INTERVALS = {
     "1m": "toStartOfMinute",
     "5m": "toStartOfFiveMinutes",
     "15m": "toStartOfFifteenMinutes",
     "1h": "toStartOfHour",
 }
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
 @app.get("/symbols")
 def list_symbols():
     client = get_client()
@@ -36,10 +29,8 @@ def list_symbols():
         "SELECT DISTINCT symbol FROM trades ORDER BY symbol"
     )
     return {"symbols": [row[0] for row in result.result_rows]}
-
-
 @app.get("/ohlc")
-def ohlc(
+async def ohlc(
     symbol: str = Query(..., description="e.g. BTCUSDT"),
     interval: str = Query("1m", description="1m, 5m, 15m, or 1h"),
     limit: int = Query(100, le=1000),
@@ -47,9 +38,16 @@ def ohlc(
     if interval not in VALID_INTERVALS:
         raise HTTPException(400, f"interval must be one of {list(VALID_INTERVALS)}")
 
+    symbol = symbol.upper()
+    cache_key = f"ohlc:{symbol}:{interval}:{limit}"
+    r = get_redis()
+
+    cached = await r.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
     bucket_fn = VALID_INTERVALS[interval]
     client = get_client()
-
     query = f"""
         SELECT
             {bucket_fn}(timestamp) AS bucket,
@@ -66,9 +64,8 @@ def ohlc(
         LIMIT {{limit:UInt32}}
     """
     result = client.query(
-        query, parameters={"symbol": symbol.upper(), "limit": limit}
+        query, parameters={"symbol": symbol, "limit": limit}
     )
-
     candles = [
         {
             "bucket": row[0].isoformat(),
@@ -81,14 +78,22 @@ def ohlc(
         }
         for row in result.result_rows
     ]
-    return {"symbol": symbol.upper(), "interval": interval, "candles": list(reversed(candles))}
+    response = {"symbol": symbol, "interval": interval, "candles": list(reversed(candles))}
 
-
+    await r.set(cache_key, json.dumps(response), ex=5)  # 5s TTL
+    return response
 @app.get("/top-symbols")
-def top_symbols(
+async def top_symbols(
     window_minutes: int = Query(5, le=1440, description="lookback window in minutes"),
     limit: int = Query(10, le=50),
 ):
+    cache_key = f"top-symbols:{window_minutes}:{limit}"
+    r = get_redis()
+
+    cached = await r.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
     client = get_client()
     query = """
         SELECT
@@ -104,10 +109,13 @@ def top_symbols(
     result = client.query(
         query, parameters={"window": window_minutes, "limit": limit}
     )
-    return {
+    response = {
         "window_minutes": window_minutes,
         "top_symbols": [
             {"symbol": row[0], "volume_quote": float(row[1]), "trade_count": row[2]}
             for row in result.result_rows
         ],
     }
+
+    await r.set(cache_key, json.dumps(response), ex=15)  # 15s TTL
+    return response
