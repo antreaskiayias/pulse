@@ -4,6 +4,7 @@ import PriceChart from "./components/PriceChart";
 import "./App.css";
 import TopSymbols from "./components/TopSymbols";
 import CorrelationHeatmap from "./components/CorrelationHeatmap";
+import SimplicialComplex from "./components/SimplicialComplex";
 
 
 export default function App() {
@@ -42,6 +43,9 @@ export default function App() {
         <TopSymbols />
         <CorrelationHeatmap />
      </div>
+     <div style={{ marginTop: "2rem" }}>
+       <SimplicialComplex symbol={selected} />
+    </div>
     </div>
   );
 }
