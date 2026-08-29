@@ -46,6 +46,25 @@ services:
         CLICKHOUSE_DB: pulse
       restart: unless-stopped
 
+  api:
+      build: ./api
+      container_name: pulse-api
+      ports:
+        - "8000:8000"
+      depends_on:
+        clickhouse:
+          condition: service_healthy
+        redis:
+          condition: service_started
+      environment:
+        CLICKHOUSE_HOST: clickhouse
+        CLICKHOUSE_HTTP_PORT: 8123
+        CLICKHOUSE_USER: pulse
+        CLICKHOUSE_PASSWORD: pulse_dev_pw
+        CLICKHOUSE_DB: pulse
+        REDIS_URL: redis://redis:6379
+      restart: unless-stopped
+
 volumes:
   clickhouse_data:
   redis_data:
