@@ -119,3 +119,57 @@ async def top_symbols(
 
     await r.set(cache_key, json.dumps(response), ex=15)  # 15s TTL
     return response
+@app.get("/correlation")
+async def correlation(
+    interval: str = Query("1m"),
+    lookback: int = Query(60, le=1440, description="minutes of history"),
+):
+    cache_key = f"correlation:{interval}:{lookback}"
+    r = get_redis()
+    cached = await r.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    if interval not in VALID_INTERVALS:
+        raise HTTPException(400, f"interval must be one of {list(VALID_INTERVALS)}")
+    bucket_fn = VALID_INTERVALS[interval]
+    client = get_client()
+
+    query = f"""
+        SELECT symbol, {bucket_fn}(timestamp) AS bucket, argMax(price, timestamp) AS close
+        FROM trades
+        WHERE timestamp >= now() - INTERVAL {{lookback:UInt32}} MINUTE
+        GROUP BY symbol, bucket
+        ORDER BY symbol, bucket
+    """
+    result = client.query(query, parameters={"lookback": lookback})
+
+    from collections import defaultdict
+    series: dict = defaultdict(dict)
+    for symbol, bucket, close in result.result_rows:
+        series[symbol][bucket] = float(close)
+
+    symbols = sorted(series.keys())
+    common_buckets = sorted(set.intersection(*[set(series[s].keys()) for s in symbols])) if symbols else []
+
+    import statistics
+    def pearson(a: list, b: list) -> float:
+        if len(a) < 2:
+            return 0.0
+        try:
+            return statistics.correlation(a, b)
+        except statistics.StatisticsError:
+            return 0.0
+
+    matrix = []
+    for s1 in symbols:
+        row = []
+        vals1 = [series[s1][b] for b in common_buckets]
+        for s2 in symbols:
+            vals2 = [series[s2][b] for b in common_buckets]
+            row.append(round(pearson(vals1, vals2), 3))
+        matrix.append(row)
+
+    response = {"symbols": symbols, "matrix": matrix}
+    await r.set(cache_key, json.dumps(response), ex=30)
+    return response
