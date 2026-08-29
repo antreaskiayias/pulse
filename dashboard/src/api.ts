@@ -49,3 +49,18 @@ export async function fetchTopSymbols(
   });
   return res.data;
 }
+
+export interface CorrelationResponse {
+  symbols: string[];
+  matrix: number[][];
+}
+
+export async function fetchCorrelation(
+  interval: string = "1m",
+  lookback: number = 60
+): Promise<CorrelationResponse> {
+  const res = await axios.get<CorrelationResponse>(`${API_URL}/correlation`, {
+    params: { interval, lookback },
+  });
+  return res.data;
+}

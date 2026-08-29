@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { fetchSymbols } from "./api";
 import PriceChart from "./components/PriceChart";
 import "./App.css";
+import TopSymbols from "./components/TopSymbols";
+import CorrelationHeatmap from "./components/CorrelationHeatmap";
+
 
 export default function App() {
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -35,6 +38,10 @@ export default function App() {
       </div>
 
       {selected && <PriceChart symbol={selected} interval={interval} />}
+      <div style={{ display: "flex", gap: "2rem", marginTop: "2rem", flexWrap: "wrap" }}>
+        <TopSymbols />
+        <CorrelationHeatmap />
+     </div>
     </div>
   );
 }
