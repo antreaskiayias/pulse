@@ -1,10 +1,17 @@
 import json
 import os
+from collections import deque, defaultdict
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from app.clickhouse_client import get_client
 from app.redis_client import get_redis
+from app.tda import build_point_cloud, build_vietoris_rips_edges, betti_numbers
+
+price_buffers: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
+qty_buffers: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
+
+EPSILON = 0.5 
 
 app = FastAPI(title="PULSE API")
 app.add_middleware(
@@ -173,3 +180,29 @@ async def correlation(
     response = {"symbols": symbols, "matrix": matrix}
     await r.set(cache_key, json.dumps(response), ex=30)
     return response
+
+async def redis_listener():
+    pubsub = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379")).pubsub()
+    await pubsub.psubscribe("ticks:*")
+    async for message in pubsub.listen():
+        if message["type"] != "pmessage":
+            continue
+        symbol = message["channel"].decode().split(":", 1)[1]
+        tick = json.loads(message["data"])
+        price_buffers[symbol].append(tick["price"])
+        qty_buffers[symbol].append(tick["quantity"])
+
+        if symbol in active_connections and len(price_buffers[symbol]) >= 15:
+            points = build_point_cloud(list(price_buffers[symbol]), list(qty_buffers[symbol]))
+            edges = build_vietoris_rips_edges(points, EPSILON)
+            b0, b1 = betti_numbers(len(points), edges)
+
+            payload = json.dumps({
+                "symbol": symbol,
+                "points": points.tolist(),
+                "edges": edges,
+                "betti_0": b0,
+                "betti_1": b1,
+            })
+            for ws in active_connections[symbol]:
+                await ws.send_text(payload)
