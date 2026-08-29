@@ -44,6 +44,7 @@ services:
       CLICKHOUSE_USER: pulse
       CLICKHOUSE_PASSWORD: pulse_dev_pw
       CLICKHOUSE_DB: pulse
+      REDIS_URL: redis://redis:6379
     restart: unless-stopped
 
   api:

@@ -8,6 +8,12 @@ import websockets
 import clickhouse_connect
 from dotenv import load_dotenv
 
+import redis.asyncio as redis
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+redis_client = redis.from_url(REDIS_URL)
+
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -28,6 +34,19 @@ CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "pulse")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "pulse_dev_pw")
 CLICKHOUSE_DB = os.getenv("CLICKHOUSE_DB", "pulse")
 
+async def publish_tick(raw: dict):
+    data = raw["data"]
+    try:
+        await redis_client.publish(
+            f"ticks:{data['s']}",
+            json.dumps({
+                "price": float(data["p"]),
+                "quantity": float(data["q"]),
+                "ts": data["T"],
+            }),
+        )
+    except Exception as e:
+        log.warning(f"tick publish failed (non-fatal): {e}")
 
 def get_client():
     return clickhouse_connect.get_client(
@@ -37,7 +56,6 @@ def get_client():
         password=CLICKHOUSE_PASSWORD,
         database=CLICKHOUSE_DB,
     )
-
 
 def normalize_trade(raw: dict) -> tuple:
     """Binance trade payload -> row tuple matching pulse.trades column order."""
@@ -88,6 +106,7 @@ async def consume():
                 async for message in ws:
                     raw = json.loads(message)
                     buffer.append(normalize_trade(raw))
+                    await publish_tick(raw)
 
                     now = asyncio.get_event_loop().time()
                     if len(buffer) >= BATCH_SIZE or (now - last_flush) >= FLUSH_INTERVAL_SEC:
