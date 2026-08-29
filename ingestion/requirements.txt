@@ -1,0 +1,6 @@
+certifi==2026.7.22
+clickhouse-connect==1.7.2
+lz4==4.4.5
+python-dotenv==1.2.3
+urllib3==2.7.0
+websockets==17.1
