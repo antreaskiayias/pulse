@@ -1,8 +1,12 @@
+import asyncio
 import json
 import os
 from collections import deque, defaultdict
-from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, Query
+from contextlib import asynccontextmanager
+from typing import Set
+
+import redis.asyncio as aioredis
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from app.clickhouse_client import get_client
 from app.redis_client import get_redis
@@ -11,31 +15,109 @@ from app.tda import build_point_cloud, build_vietoris_rips_edges, betti_numbers
 price_buffers: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 qty_buffers: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
+# Track active WebSocket clients per symbol
+active_connections: dict[str, Set[WebSocket]] = defaultdict(set)
+
 EPSILON = 0.5 
 
-app = FastAPI(title="PULSE API")
+async def redis_listener():
+    r_url = os.getenv("REDIS_URL", "redis://redis:6379")
+    r = aioredis.from_url(r_url)
+    pubsub = r.pubsub()
+    await pubsub.psubscribe("ticks:*")
+    
+    async for message in pubsub.listen():
+        if message["type"] != "pmessage":
+            continue
+        
+        channel_name = message["channel"].decode() if isinstance(message["channel"], bytes) else message["channel"]
+        symbol = channel_name.split(":", 1)[1]
+        
+        data = message["data"].decode() if isinstance(message["data"], bytes) else message["data"]
+        tick = json.loads(data)
+        
+        price_buffers[symbol].append(tick["price"])
+        qty_buffers[symbol].append(tick["quantity"])
+
+        # Broadcast if connections exist for this symbol
+        if symbol in active_connections and active_connections[symbol] and len(price_buffers[symbol]) >= 15:
+            points = build_point_cloud(list(price_buffers[symbol]), list(qty_buffers[symbol]))
+            edges = build_vietoris_rips_edges(points, EPSILON)
+            b0, b1 = betti_numbers(len(points), edges)
+
+            payload = json.dumps({
+                "symbol": symbol,
+                "points": points.tolist(),
+                "edges": edges,
+                "betti_0": b0,
+                "betti_1": b1,
+            })
+            
+            disconnected = set()
+            for ws in list(active_connections[symbol]):
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    disconnected.add(ws)
+            
+            for ws in disconnected:
+                active_connections[symbol].discard(ws)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(redis_listener())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(title="PULSE API", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production; fine for a local dashboard
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 VALID_INTERVALS = {
     "1m": "toStartOfMinute",
     "5m": "toStartOfFiveMinutes",
     "15m": "toStartOfFifteenMinutes",
     "1h": "toStartOfHour",
 }
+
+# --- WEBSOCKET HANDLERS ---
+@app.websocket("/ws/tda/")
+@app.websocket("/ws/tda/{symbol}")
+async def websocket_tda(websocket: WebSocket, symbol: str = "BTCUSDT"):
+    symbol = symbol.upper()
+    await websocket.accept()
+    active_connections[symbol].add(websocket)
+    try:
+        while True:
+            # Keep connection alive without crashing if client sends pings/text
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        active_connections[symbol].discard(websocket)
+        if not active_connections[symbol]:
+            del active_connections[symbol]
+
+# --- HTTP ENDPOINTS ---
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 @app.get("/symbols")
 def list_symbols():
     client = get_client()
-    result = client.query(
-        "SELECT DISTINCT symbol FROM trades ORDER BY symbol"
-    )
+    result = client.query("SELECT DISTINCT symbol FROM trades ORDER BY symbol")
     return {"symbols": [row[0] for row in result.result_rows]}
+
 @app.get("/ohlc")
 async def ohlc(
     symbol: str = Query(..., description="e.g. BTCUSDT"),
@@ -70,9 +152,7 @@ async def ohlc(
         ORDER BY bucket DESC
         LIMIT {{limit:UInt32}}
     """
-    result = client.query(
-        query, parameters={"symbol": symbol, "limit": limit}
-    )
+    result = client.query(query, parameters={"symbol": symbol, "limit": limit})
     candles = [
         {
             "bucket": row[0].isoformat(),
@@ -87,8 +167,9 @@ async def ohlc(
     ]
     response = {"symbol": symbol, "interval": interval, "candles": list(reversed(candles))}
 
-    await r.set(cache_key, json.dumps(response), ex=5)  # 5s TTL
+    await r.set(cache_key, json.dumps(response), ex=5)
     return response
+
 @app.get("/top-symbols")
 async def top_symbols(
     window_minutes: int = Query(5, le=1440, description="lookback window in minutes"),
@@ -113,9 +194,7 @@ async def top_symbols(
         ORDER BY volume_quote DESC
         LIMIT {limit:UInt32}
     """
-    result = client.query(
-        query, parameters={"window": window_minutes, "limit": limit}
-    )
+    result = client.query(query, parameters={"window": window_minutes, "limit": limit})
     response = {
         "window_minutes": window_minutes,
         "top_symbols": [
@@ -124,8 +203,9 @@ async def top_symbols(
         ],
     }
 
-    await r.set(cache_key, json.dumps(response), ex=15)  # 15s TTL
+    await r.set(cache_key, json.dumps(response), ex=15)
     return response
+
 @app.get("/correlation")
 async def correlation(
     interval: str = Query("1m"),
@@ -151,7 +231,6 @@ async def correlation(
     """
     result = client.query(query, parameters={"lookback": lookback})
 
-    from collections import defaultdict
     series: dict = defaultdict(dict)
     for symbol, bucket, close in result.result_rows:
         series[symbol][bucket] = float(close)
@@ -180,29 +259,3 @@ async def correlation(
     response = {"symbols": symbols, "matrix": matrix}
     await r.set(cache_key, json.dumps(response), ex=30)
     return response
-
-async def redis_listener():
-    pubsub = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379")).pubsub()
-    await pubsub.psubscribe("ticks:*")
-    async for message in pubsub.listen():
-        if message["type"] != "pmessage":
-            continue
-        symbol = message["channel"].decode().split(":", 1)[1]
-        tick = json.loads(message["data"])
-        price_buffers[symbol].append(tick["price"])
-        qty_buffers[symbol].append(tick["quantity"])
-
-        if symbol in active_connections and len(price_buffers[symbol]) >= 15:
-            points = build_point_cloud(list(price_buffers[symbol]), list(qty_buffers[symbol]))
-            edges = build_vietoris_rips_edges(points, EPSILON)
-            b0, b1 = betti_numbers(len(points), edges)
-
-            payload = json.dumps({
-                "symbol": symbol,
-                "points": points.tolist(),
-                "edges": edges,
-                "betti_0": b0,
-                "betti_1": b1,
-            })
-            for ws in active_connections[symbol]:
-                await ws.send_text(payload)
