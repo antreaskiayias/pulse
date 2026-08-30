@@ -28,22 +28,30 @@ websocket, normalizes each trade, and batches inserts into ClickHouse.
 - **Batching**: inserts are batched (200 rows or 2s, whichever comes first)
   rather than per-trade, since ClickHouse is optimized for bulk inserts, not
   high-frequency single-row writes.
-- **Known limitation**: no deduplication on `trade_id` at insert time. Binance
-  trade IDs are unique per symbol, so a reconnect that re-delivers an
-  in-flight trade could create a duplicate row. A production system would
-  enforce this with a `ReplacingMergeTree` keyed on `(symbol, trade_id)` or an
-  idempotency check before insert. Documented here rather than fixed, given
+- **Known limitation**: graceful shutdown (SIGTERM/SIGINT) flushes the
+  in-memory buffer before exit, and `ReplacingMergeTree` keyed on
+  (symbol, trade_id) prevents duplicate rows from reconnects — verified via
+  a `FINAL` dedup query returning zero duplicate rows. A hard kill (SIGKILL,
+  OOM, or a crash) can still lose whatever's in the buffer at that instant,
+  since nothing persists it before the periodic flush. A write-ahead log or
+  a message-queue intermediary (Kafka/Redis Streams) between the socket and
+  ClickHouse would close this remaining gap; not implemented here given
   time constraints.
 
 ## Storage — ClickHouse
 
 Single `trades` table:
 
-- **Engine**: `MergeTree` — trades are immutable append-only facts, no need
-  for `ReplacingMergeTree` semantics beyond the dedup caveat above.
-- **Ordering key**: `(symbol, timestamp)` — most queries filter by symbol
-  first, so this lets ClickHouse skip irrelevant granules; timestamp second
-  gives efficient range scans within a symbol.
+- **Engine**: `ReplacingMergeTree`, keyed on `(symbol, trade_id)` — trades
+  are immutable facts, but a websocket reconnect can redeliver an in-flight
+  trade, so replacing semantics (deduplicated at merge time, enforced at
+  query time via `FINAL`) close that gap. `FINAL` is applied selectively
+  where exact counts matter, not on every query, since it adds real query
+  cost.
+- **Ordering key**: `(symbol, trade_id)` — `trade_id` is unique per symbol
+  and increases monotonically with time for Binance trades, so this
+  preserves chronological ordering within a symbol while also serving as
+  the dedup key for `ReplacingMergeTree`.
 - **Partitioning**: daily (`toDate(timestamp)`) — keeps parts a manageable
   size given trade volume, and makes retention (`DROP PARTITION`) cheap.
 - **Types**: `LowCardinality(String)` for symbol (small fixed set, strong
@@ -128,8 +136,18 @@ from a personal project (market-geometry) into a live-streaming context.
   pipeline — a real TDA analysis would use a library like `ripser` and
   proper persistence diagrams rather than a single-threshold snapshot.
 - ε (the connection threshold) is a fixed constant, not adaptively chosen
-  from the data's scale — a more robust version would compute ε from the
-  point cloud's own distance distribution.
+  from the data's scale — observed to produce a near-complete graph
+  (β₁ in the thousands) under some conditions, which mainly confirms recent
+  trades are tightly clustered rather than revealing differentiated
+  structure. A more robust version would compute ε from a low percentile of
+  the point cloud's own pairwise distance distribution; identified but not
+  implemented given time constraints.
+- The correlation endpoint correlates price *levels*, not returns, over the
+  lookback window. Since major crypto assets tend to share broad trend
+  direction, this inflates correlation regardless of genuine co-movement —
+  the values shown are plausible for crypto majors but not fully separable
+  from shared-trend effects. Correlating log returns would isolate genuine
+  co-movement; identified but not implemented given time constraints.
 
 ## Scaling — expected first failure points
 
@@ -156,7 +174,9 @@ from a personal project (market-geometry) into a live-streaming context.
 ## What I'd do with more time
 
 - Materialized views for OHLC pre-aggregation (see Storage section)
-- Trade ID deduplication in ingestion (see Ingestion section)
+- Adaptive, percentile-based epsilon for the TDA extension (see Extension
+  section)
+- Correlate log returns instead of price levels (see Extension section)
 - Proper persistence diagrams instead of a single-ε snapshot for the TDA
   extension
 - Integration tests around the ingestion worker's reconnect logic
