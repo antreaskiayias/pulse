@@ -61,7 +61,7 @@ Single `trades` table:
   enough history for correlation/heatmap queries against unbounded disk
   growth for a demo system.
 - **Trade-off not taken**: no materialized view for OHLC pre-aggregation.
-  Given more time, I'd add a `SummingMergeTree`-backed materialized view
+  Given more time, I'd add an `AggregatingMergeTree`-backed materialized view
   rolling trades into 1-minute buckets continuously, rather than computing
   OHLC via `argMin`/`argMax` on raw rows at query time — this becomes the
   first real bottleneck at scale (see "Scaling" below).
