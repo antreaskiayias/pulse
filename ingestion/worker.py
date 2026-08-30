@@ -13,6 +13,14 @@ import redis.asyncio as redis
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 redis_client = redis.from_url(REDIS_URL)
 
+import signal
+
+shutdown_event = asyncio.Event()
+
+def handle_shutdown(*_):
+    log.info("shutdown signal received, will flush buffer before exiting")
+    shutdown_event.set()
+
 
 load_dotenv()
 
@@ -91,19 +99,20 @@ async def flush(client, buffer: list):
         # NOTE: a real production system would retry or write to a dead-letter
         # queue here instead of dropping — documented as a known limitation.
 
-
 async def consume():
     client = get_client()
     buffer: list = []
     last_flush = asyncio.get_event_loop().time()
     backoff = 1
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             async with websockets.connect(STREAM_URL, ping_interval=20) as ws:
                 log.info("connected to Binance stream")
-                backoff = 1  # reset after a successful connection
+                backoff = 1
                 async for message in ws:
+                    if shutdown_event.is_set():
+                        break
                     raw = json.loads(message)
                     buffer.append(normalize_trade(raw))
                     await publish_tick(raw)
@@ -116,11 +125,17 @@ async def consume():
 
         except (websockets.ConnectionClosed, OSError) as e:
             log.warning(f"connection lost ({e}), reconnecting in {backoff}s")
-            await flush(client, buffer)  # don't lose buffered trades on disconnect
+            await flush(client, buffer)
             buffer = []
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)  # exponential backoff, capped at 60s
+            if not shutdown_event.is_set():
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
 
+    # final flush on graceful shutdown
+    await flush(client, buffer)
+    log.info("flushed remaining buffer, exiting")
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
     asyncio.run(consume())
