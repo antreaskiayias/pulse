@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS pulse.trades
     timestamp       DateTime64(3),
     ingested_at     DateTime64(3) DEFAULT now64(3)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 PARTITION BY toDate(timestamp)
-ORDER BY (symbol, timestamp)
+ORDER BY (symbol, trade_id)
 TTL toDateTime(timestamp) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
