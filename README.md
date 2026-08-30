@@ -13,9 +13,8 @@ extension.
 ## Running
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/antreaskiayias/pulse
 cd pulse
-cp .env.example .env          # adjust if needed; defaults work out of the box
 docker compose up --build -d
 ```
 
