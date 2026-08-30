@@ -6,11 +6,11 @@ import TopSymbols from "./components/TopSymbols";
 import CorrelationHeatmap from "./components/CorrelationHeatmap";
 import SimplicialComplex from "./components/SimplicialComplex";
 
-
 export default function App() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [interval, setInterval_] = useState("1m");
+  const [limit, setLimit] = useState(60);
 
   useEffect(() => {
     fetchSymbols().then((syms) => {
@@ -36,16 +36,26 @@ export default function App() {
           <option value="15m">15m</option>
           <option value="1h">1h</option>
         </select>
+
+        <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} style={{ marginLeft: "1rem" }}>
+          <option value={30}>Last 30 buckets</option>
+          <option value={60}>Last 60 buckets</option>
+          <option value={120}>Last 120 buckets</option>
+        </select>
       </div>
 
-      {selected && <PriceChart symbol={selected} interval={interval} />}
+      {selected && <PriceChart symbol={selected} interval={interval} limit={limit} />}
+
       <div style={{ display: "flex", gap: "2rem", marginTop: "2rem", flexWrap: "wrap" }}>
-        <TopSymbols />
+        <TopSymbols onSelectSymbol={setSelected} />
         <CorrelationHeatmap />
-     </div>
-     <div style={{ marginTop: "2rem" }}>
-       <SimplicialComplex symbol={selected} />
-    </div>
+      </div>
+
+      {selected && (
+        <div style={{ marginTop: "2rem" }}>
+          <SimplicialComplex symbol={selected} />
+        </div>
+      )}
     </div>
   );
 }

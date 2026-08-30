@@ -1,7 +1,11 @@
 import { fetchTopSymbols } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
-export default function TopSymbols() {
+interface Props {
+  onSelectSymbol: (symbol: string) => void;
+}
+
+export default function TopSymbols({ onSelectSymbol }: Props) {
   const { data, error } = usePolling(() => fetchTopSymbols(5, 10), 5000, []);
 
   if (error) return <div className="error">Failed to load: {error}</div>;
@@ -20,7 +24,12 @@ export default function TopSymbols() {
         </thead>
         <tbody>
           {data.top_symbols.map((s) => (
-            <tr key={s.symbol}>
+            <tr
+              key={s.symbol}
+              onClick={() => onSelectSymbol(s.symbol)}
+              style={{ cursor: "pointer" }}
+              title="Click to view this symbol"
+            >
               <td>{s.symbol}</td>
               <td style={{ textAlign: "right" }}>{s.volume_quote.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
               <td style={{ textAlign: "right" }}>{s.trade_count}</td>

@@ -5,13 +5,14 @@ import { usePolling } from "../hooks/usePolling";
 interface Props {
   symbol: string;
   interval: string;
+  limit: number;
 }
 
-export default function PriceChart({ symbol, interval }: Props) {
+export default function PriceChart({ symbol, interval, limit }: Props) {
   const { data, error } = usePolling(
-    () => fetchOhlc(symbol, interval, 60),
+    () => fetchOhlc(symbol, interval, limit),
     3000,
-    [symbol, interval]
+    [symbol, interval, limit]
   );
 
   if (error) return <div className="error">Failed to load: {error}</div>;
