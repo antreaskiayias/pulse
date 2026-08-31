@@ -34,6 +34,14 @@ curl -u pulse:pulse_dev_pw "http://localhost:8123/?query=SELECT+count()+FROM+pul
 
 The count should be increasing on repeated calls.
 
+## Stopping
+
+To stop all services and remove container volumes:
+
+```bash
+docker compose down -v
+```
+
 ## Project structure
 
 ```
