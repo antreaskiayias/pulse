@@ -69,7 +69,7 @@ Single `trades` table:
 ## API — FastAPI
 
 Endpoints: `/symbols`, `/ohlc`, `/top-symbols`, `/correlation`,
-`/ws/phase-space/{symbol}`.
+`/ws/TDA/{symbol}`.
 
 - `/ohlc` buckets trades via ClickHouse's `toStartOfMinute`/`toStartOfHour`
   family of functions and derives OHLC using `argMin`/`argMax` (value of
